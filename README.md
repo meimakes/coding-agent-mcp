@@ -1,0 +1,222 @@
+# coding-agent-mcp
+
+An MCP server (SSE transport) that lets any MCP client spawn and control [Codex CLI](https://github.com/openai/codex) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions on the host machine.
+
+## Features
+
+### Session management
+- **session_start** — Spawn a Codex or Claude Code session in any directory
+- **session_send** — Send messages to a running session's stdin
+- **session_output** — Read buffered output with offset-based pagination (includes session status)
+- **session_wait** — Block until a session produces new output or exits
+- **session_list** — List all active sessions with status
+- **session_kill** — Terminate a session (SIGTERM, then SIGKILL after 5s)
+
+### Filesystem access
+- **read_file** — Read file contents (with line offset/limit pagination)
+- **list_directory** — Browse directories (recursive up to depth 3)
+
+### Infrastructure
+- Real-time streaming output via `--output-format stream-json`
+- Ring buffer (last 10,000 lines) per session
+- Auto-kill sessions after configurable idle timeout (default 30 min)
+- Bearer token authentication on all endpoints
+- Filesystem sandboxed to `WORKSPACE_DIR` and active session directories
+- Env var whitelisting for child processes (AUTH_TOKEN never leaks)
+- Per-IP rate limiting and SSE connection caps
+- Graceful shutdown with SIGTERM/SIGINT handling
+
+## Prerequisites
+
+- Node.js 20+
+- `codex` CLI installed globally (for Codex sessions)
+- `claude` CLI installed globally (for Claude Code sessions)
+
+## Setup
+
+```bash
+git clone <repo-url>
+cd coding-agent-mcp
+npm install
+npm run build
+```
+
+## Configuration
+
+Set environment variables (or copy `.env.example` to `.env`):
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AUTH_TOKEN` | Yes | — | Bearer token for client authentication |
+| `PORT` | No | `3500` | HTTP server port |
+| `WORKSPACE_DIR` | No | `cwd()` | Base directory for sessions; filesystem tools are sandboxed here |
+| `IDLE_TIMEOUT` | No | `1800000` | Session idle timeout in ms (30 min) |
+| `MAX_SSE_CONNECTIONS` | No | `50` | Max concurrent SSE connections |
+| `SSE_IDLE_TIMEOUT` | No | `300000` | Idle SSE connection eviction timeout in ms (5 min) |
+| `RATE_LIMIT_RPM` | No | `120` | Max requests per minute per IP on POST /messages |
+| `CHILD_ENV_*` | No | — | Extra env vars forwarded to child processes (prefix stripped) |
+
+## Running
+
+```bash
+# Production
+AUTH_TOKEN=my-secret npm start
+
+# Development (with hot reload via tsx)
+AUTH_TOKEN=my-secret npm run dev
+```
+
+## MCP Client Configuration
+
+Add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "coding-agent": {
+      "url": "http://localhost:3500/sse",
+      "headers": {
+        "Authorization": "Bearer my-secret"
+      }
+    }
+  }
+}
+```
+
+## Tools
+
+### session_start
+
+Spawn a new coding agent session.
+
+```json
+{
+  "agent": "codex",
+  "cwd": "/path/to/project",
+  "task": "Fix the failing tests in src/utils.ts"
+}
+```
+
+- **codex**: Launches `codex --yolo exec '<task>'` with PTY. Auto-runs `git init` if needed.
+- **claude-code**: Launches `claude --print --verbose --output-format stream-json --dangerously-skip-permissions '<task>'`.
+
+Returns session info including `initialOutput` captured during the first 1.5s of startup.
+
+### session_send
+
+Send a message to a running session's stdin (Codex PTY sessions only; no-op for Claude Code `--print` sessions).
+
+```json
+{
+  "sessionId": "uuid-here",
+  "message": "Now also add tests for the edge cases"
+}
+```
+
+### session_output
+
+Get buffered output from a session. Response includes `status` and `exitCode`.
+
+```json
+{
+  "sessionId": "uuid-here",
+  "since": 150
+}
+```
+
+### session_wait
+
+Block until a session produces new output or exits. Useful for avoiding blind polling.
+
+```json
+{
+  "sessionId": "uuid-here",
+  "since": 150,
+  "timeoutMs": 60000
+}
+```
+
+### session_list
+
+List all sessions with their current status.
+
+### session_kill
+
+Kill a session by ID. Sends SIGTERM, then SIGKILL after 5 seconds.
+
+### read_file
+
+Read a file on the host. Path must be inside `WORKSPACE_DIR` or an active session's working directory.
+
+```json
+{
+  "path": "/workspace/project/src/index.ts",
+  "maxLines": 100,
+  "offset": 0
+}
+```
+
+### list_directory
+
+List files and directories. Same path restrictions as `read_file`.
+
+```json
+{
+  "path": "/workspace/project/src",
+  "recursive": true
+}
+```
+
+## Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/sse` | Yes | SSE connection for MCP transport |
+| POST | `/messages` | Yes | JSON-RPC message handling (rate limited) |
+| GET | `/health` | No* | Health check (*session count requires auth) |
+
+## Security
+
+- **Authentication**: Bearer token required on all MCP endpoints
+- **Filesystem sandboxing**: `read_file` and `list_directory` are restricted to `WORKSPACE_DIR` and active session working directories. Symlinks are resolved before access checks to prevent escapes.
+- **Env var isolation**: Only whitelisted environment variables are forwarded to child processes. `AUTH_TOKEN` and other server credentials are never exposed. Use `CHILD_ENV_*` prefix to forward additional variables.
+- **Rate limiting**: Per-IP request throttling on `/messages` (configurable via `RATE_LIMIT_RPM`)
+- **Connection limits**: Max SSE connections capped (configurable via `MAX_SSE_CONNECTIONS`), with automatic eviction of idle connections
+- **Session cwd validation**: Relative paths are validated against `WORKSPACE_DIR` to prevent traversal attacks
+- **Graceful shutdown**: SIGTERM/SIGINT handlers clean up all child processes
+
+### Known limitation: session process isolation
+
+The MCP server's own filesystem tools (`read_file`, `list_directory`) are sandboxed to `WORKSPACE_DIR` and active session directories. However, **spawned coding agents (Claude Code, Codex) have full shell access** and can read or write anywhere the host OS user can. A system prompt instructs the agent to stay within its session directory, but this is a soft boundary — a malicious or manipulated prompt could escape it.
+
+This is not a remote code execution risk from outside the server (all endpoints require authentication), but it means a rogue task could access files outside its working directory on the host.
+
+**Recommended mitigations for production:**
+- Run the server inside a container (Docker) with a read-only root filesystem and only the workspace mounted
+- On Linux, use namespaces or `unshare` to restrict the child process's filesystem view
+- On macOS, use `sandbox-exec` profiles to confine child processes
+- Limit the host user's filesystem permissions to the minimum needed
+
+## Architecture
+
+- **Transport**: SSE (Server-Sent Events) via `@modelcontextprotocol/sdk`
+- **Codex sessions**: Managed via `node-pty` for proper terminal emulation
+- **Claude Code sessions**: Managed via `child_process.spawn` with `--print --verbose --output-format stream-json`
+- **Output**: Structured stream-json events parsed into readable log lines (tool calls, results, cost)
+- **Buffering**: Ring buffer of 10,000 lines per session with offset-based reading
+- **Cleanup**: Stale sessions killed after idle timeout; idle SSE connections evicted
+
+## Development
+
+```bash
+npm run dev          # Start with tsx hot reload
+npm run lint         # ESLint
+npm run lint:fix     # ESLint with auto-fix
+npm run format       # Prettier format
+npm run format:check # Prettier check
+npm test             # Run test suite
+```
+
+## License
+
+MIT
