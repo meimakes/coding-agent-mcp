@@ -29,13 +29,15 @@ An MCP server (SSE transport) that lets any MCP client spawn and control [Codex 
 ## Prerequisites
 
 - Node.js 20+
-- `codex` CLI installed globally (for Codex sessions)
-- `claude` CLI installed globally (for Claude Code sessions)
+- [`codex` CLI](https://github.com/openai/codex) installed globally (for Codex sessions): `npm install -g @openai/codex`
+- [`claude` CLI](https://docs.anthropic.com/en/docs/claude-code/getting-started) installed globally (for Claude Code sessions): `npm install -g @anthropic-ai/claude-code`
+
+Only the agent(s) you plan to use need to be installed. Claude Code requires OAuth login (`claude login`); Codex requires an `OPENAI_API_KEY`.
 
 ## Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/meimakes/coding-agent-mcp.git
 cd coding-agent-mcp
 npm install
 npm run build
@@ -197,6 +199,64 @@ This is not a remote code execution risk from outside the server (all endpoints 
 - On macOS, use `sandbox-exec` profiles to confine child processes
 - Limit the host user's filesystem permissions to the minimum needed
 
+## Running as a persistent service (macOS)
+
+Claude Code sessions require access to the macOS login keychain for OAuth credentials. This means the server process **must run within a GUI login session** — if started via SSH or a background script that later disconnects, keychain access is lost and Claude Code sessions will fail with "Not logged in."
+
+The recommended approach is a **LaunchAgent** (not a LaunchDaemon):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.coding-agent-mcp.main</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/path/to/coding-agent-mcp/dist/index.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/coding-agent-mcp</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTH_TOKEN</key>
+        <string>your-secret-token</string>
+        <key>PORT</key>
+        <string>3500</string>
+        <key>WORKSPACE_DIR</key>
+        <string>/path/to/workspace</string>
+        <key>HOME</key>
+        <string>/Users/youruser</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/coding-agent-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/coding-agent-mcp.log</string>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+</dict>
+</plist>
+```
+
+Save to `~/Library/LaunchAgents/dev.coding-agent-mcp.main.plist`, then:
+
+```bash
+launchctl load ~/Library/LaunchAgents/dev.coding-agent-mcp.main.plist
+```
+
+LaunchAgents run in the Aqua (GUI) session, which keeps keychain access alive across reboots. `KeepAlive` restarts the server if it crashes.
+
+**Important:** Ensure `PATH` includes the directory containing the `claude` binary. Child processes inherit the PATH from this config, and Claude Code must be findable for `session_start` to work.
+
 ## Architecture
 
 - **Transport**: SSE (Server-Sent Events) via `@modelcontextprotocol/sdk`
@@ -205,6 +265,45 @@ This is not a remote code execution risk from outside the server (all endpoints 
 - **Output**: Structured stream-json events parsed into readable log lines (tool calls, results, cost)
 - **Buffering**: Ring buffer of 10,000 lines per session with offset-based reading
 - **Cleanup**: Stale sessions killed after idle timeout; idle SSE connections evicted
+
+## Troubleshooting
+
+### Claude Code sessions fail with "Not logged in"
+
+Claude Code stores OAuth credentials in the macOS login keychain. If the server process doesn't have access to the GUI security session, keychain reads fail silently and Claude Code reports "Not logged in."
+
+**Common causes:**
+- Server started via SSH and the SSH session has since disconnected
+- Server started with `nohup` from a remote shell (process gets orphaned to launchd without GUI context)
+
+**Fix:** Restart the server from a local terminal or use a LaunchAgent (see [Running as a persistent service](#running-as-a-persistent-service-macos)).
+
+### `node-pty` fails to install
+
+`node-pty` is a native module that requires a C++ compiler. If it fails during `npm install`:
+
+- **macOS**: Install Xcode command-line tools: `xcode-select --install`
+- **Linux**: Install build essentials: `apt-get install build-essential`
+
+If you only need Claude Code sessions (not Codex), `node-pty` is optional — the server gracefully falls back and logs a warning at startup.
+
+### Claude Code uses wrong model or version
+
+The server resolves the `claude` binary via `PATH`. If multiple versions are installed, the first one found wins. Check which binary is being used:
+
+```bash
+which claude
+claude --version
+```
+
+Ensure the `PATH` in your LaunchAgent or environment puts the desired version first.
+
+### Sessions exit immediately with code 1
+
+Check the session output via `session_output` — it includes the error message. Common causes:
+- Missing API key (`OPENAI_API_KEY` for Codex, OAuth login for Claude Code)
+- CLI binary not found in `PATH`
+- Working directory doesn't exist
 
 ## Development
 
@@ -216,6 +315,10 @@ npm run format       # Prettier format
 npm run format:check # Prettier check
 npm test             # Run test suite
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 

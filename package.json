@@ -4,6 +4,12 @@
   "description": "MCP server for spawning and controlling Codex CLI and Claude Code sessions",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -12,15 +18,29 @@
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
-    "test": "node --import tsx --test src/**/*.test.ts"
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
     "codex",
     "claude-code",
-    "coding-agent"
+    "coding-agent",
+    "ai-agent"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meimakes/coding-agent-mcp.git"
+  },
+  "homepage": "https://github.com/meimakes/coding-agent-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/meimakes/coding-agent-mcp/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "express": "^5.1.0",
