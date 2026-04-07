@@ -332,24 +332,40 @@ const transports = new Map<string, SSEServerTransport>();
 const servers = new Map<string, McpServer>();
 const sseLastActivity = new Map<string, number>();
 
-// Evict idle SSE connections every 60s
+// Evict dead or idle SSE connections every 30s
 setInterval(() => {
   const now = Date.now();
   for (const [id, lastActive] of sseLastActivity) {
-    if (now - lastActive > SSE_IDLE_TIMEOUT) {
-      log(`Evicting idle SSE connection: ${id}`);
+    const transport = transports.get(id);
+    const isSocketDead =
+      transport && !(transport as unknown as { res?: { writable?: boolean } }).res?.writable;
+    if (isSocketDead || now - lastActive > SSE_IDLE_TIMEOUT) {
+      log(`Evicting SSE connection: ${id} (${isSocketDead ? "dead socket" : "idle"})`);
       transports.delete(id);
       servers.delete(id);
       sseLastActivity.delete(id);
     }
   }
-}, 60_000);
+}, 30_000);
 
 // SSE endpoint — establishes the persistent connection
 app.get("/sse", authenticate, async (req, res) => {
+  // If at capacity, evict the oldest connection to make room
   if (transports.size >= MAX_SSE_CONNECTIONS) {
-    res.status(503).json({ error: "Too many active connections" });
-    return;
+    let oldestId: string | null = null;
+    let oldestTime = Infinity;
+    for (const [id, lastActive] of sseLastActivity) {
+      if (lastActive < oldestTime) {
+        oldestTime = lastActive;
+        oldestId = id;
+      }
+    }
+    if (oldestId) {
+      log(`Evicting oldest SSE connection to make room: ${oldestId}`);
+      transports.delete(oldestId);
+      servers.delete(oldestId);
+      sseLastActivity.delete(oldestId);
+    }
   }
   log("New SSE connection");
   const transport = new SSEServerTransport("/messages", res);
