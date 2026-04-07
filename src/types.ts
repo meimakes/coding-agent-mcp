@@ -28,6 +28,8 @@ export interface SessionInfo {
   startedAt: string;
   lastActivity: string;
   pid?: number;
+  exitCode?: number | null;
+  completedSuccessfully?: boolean;
   initialOutput?: string;
 }
 

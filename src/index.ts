@@ -64,7 +64,7 @@ function createServer(): McpServer {
 
   server.tool(
     "session_start",
-    "Spawn a new coding agent session (Codex CLI or Claude Code)",
+    "Spawn a new coding agent session. Both agents run the task and exit when done — a status of 'exited' with exitCode 0 means success, not a crash. Use session_output to read the results after the session completes.",
     {
       agent: z.enum(["codex", "claude-code"]).describe("Which coding agent to use"),
       cwd: z.string().describe("Working directory for the session"),
@@ -111,7 +111,7 @@ function createServer(): McpServer {
 
   server.tool(
     "session_output",
-    "Get output from a session",
+    "Get output from a session. Returns the full output log, current status, and exitCode. An exited session with exitCode 0 completed successfully — read the output for the results.",
     {
       sessionId: z.string().describe("Session ID"),
       since: z.number().optional().describe("Line offset to read from (omit for all output)"),

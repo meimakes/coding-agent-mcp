@@ -346,7 +346,7 @@ export function sendToSession(
 export function getSessionOutput(
   sessionId: string,
   since?: number
-): { output: string; offset: number; status: SessionStatus; exitCode?: number | null } {
+): { output: string; offset: number; status: SessionStatus; exitCode?: number | null; completedSuccessfully?: boolean } {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
 
@@ -356,6 +356,8 @@ export function getSessionOutput(
     offset,
     status: session.status,
     exitCode: session.exitCode,
+    // Explicit success flag so callers don't mistake a completed task for a crash
+    ...(session.status === "exited" && { completedSuccessfully: session.exitCode === 0 }),
   };
 }
 
@@ -363,7 +365,7 @@ export async function waitForOutput(
   sessionId: string,
   since?: number,
   timeoutMs: number = 30000
-): Promise<{ output: string; offset: number; status: SessionStatus; exitCode?: number | null }> {
+): Promise<{ output: string; offset: number; status: SessionStatus; exitCode?: number | null; completedSuccessfully?: boolean }> {
   const deadline = Date.now() + timeoutMs;
   const startOffset = since ?? 0;
 
@@ -381,6 +383,7 @@ export async function waitForOutput(
         offset,
         status: session.status,
         exitCode: session.exitCode,
+        ...(session.status === "exited" && { completedSuccessfully: session.exitCode === 0 }),
       };
     }
 
@@ -436,5 +439,7 @@ function toSessionInfo(session: Session): SessionInfo {
     status: session.status,
     startedAt: session.startedAt,
     lastActivity: session.lastActivity,
+    ...(session.exitCode != null && { exitCode: session.exitCode }),
+    ...(session.status === "exited" && { completedSuccessfully: session.exitCode === 0 }),
   };
 }
